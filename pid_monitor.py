@@ -19,7 +19,6 @@ def get_top_processes(n=3):
         except:
             continue
     time.sleep(0.8)
-
     proc_list = []
     for p in psutil.process_iter(['pid', 'name']):
         try:
@@ -98,19 +97,17 @@ class CPUGraph(QtWidgets.QWidget):
             self.timer.stop()
             self.close()
 
-
 class ProcessMonitorApp(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Process Monitoring IDS (Windows)")
         self.setGeometry(100, 100, 950, 500)
         self.setStyleSheet(qdarkstyle.load_stylesheet_pyqt5())
-        
+
         # Delay timer for resuming updates after drag/resize (to reduce lag)
         self._drag_resize_timer = QtCore.QTimer(self)
         self._drag_resize_timer.setSingleShot(True)
         self._drag_resize_timer.timeout.connect(self._resume_updates)
-
 
         layout = QtWidgets.QVBoxLayout(self)
         title = QtWidgets.QLabel("Process Monitoring Intrusion Detection System")
@@ -136,8 +133,15 @@ class ProcessMonitorApp(QtWidgets.QWidget):
 
         # System Tray Setup
         self.tray_icon = QtWidgets.QSystemTrayIcon(self)
-        icon = QtGui.QIcon.fromTheme("utilities-system-monitor") if hasattr(QtGui.QIcon, 'fromTheme') else self.style().standardIcon(QtWidgets.QStyle.SP_ComputerIcon)
-        self.tray_icon.setIcon(icon)
+        # Save your default icon (use the current icon or fallback)
+        self._default_icon = self.tray_icon.icon()
+        if self._default_icon.isNull():
+            self._default_icon = self.style().standardIcon(QtWidgets.QStyle.SP_ComputerIcon)
+
+        # Load your local alert icon file (make sure this file exists next to your script)
+        self._alert_icon = QtGui.QIcon('alert_dot.png')
+
+        self.tray_icon.setIcon(self._default_icon)
         self.tray_icon.setVisible(True)
         self.tray_icon.setToolTip("Process Monitoring IDS")
 
@@ -154,25 +158,32 @@ class ProcessMonitorApp(QtWidgets.QWidget):
         self.refresh_top_processes()
         self.show()
 
-        # Delay timer for resuming updates after drag/resize (to reduce lag)
-        self._drag_resize_timer = QtCore.QTimer(self)
-        self._drag_resize_timer.setSingleShot(True)
-        self._drag_resize_timer.timeout.connect(self._resume_updates)
-
     def on_trayicon_activated(self, reason):
         if reason == QtWidgets.QSystemTrayIcon.Trigger:
             self.showNormal()
             self.activateWindow()
 
+    def changeEvent(self, event):
+        if event.type() == QtCore.QEvent.WindowStateChange:
+            # If window is minimized
+            if self.isMinimized():
+                # Only show notification if alert present
+                if self._alert_icon is not None and self.tray_icon.icon().cacheKey() == self._alert_icon.cacheKey():
+                    self.tray_icon.showMessage(
+                        "Minimized",
+                        "Process Monitoring IDS is minimized (ALERT active).",
+                        QtWidgets.QSystemTrayIcon.Information,
+                        3000
+                    )
+                # Hide window on minimize to tray
+                QtCore.QTimer.singleShot(0, self.hide)
+        super().changeEvent(event)
+
     def closeEvent(self, event):
+        # On close, hide window instead of quitting, only hide silently
         event.ignore()
         self.hide()
-        self.tray_icon.showMessage(
-            "Minimized",
-            "Process Monitoring IDS is minimized to tray.",
-            QtWidgets.QSystemTrayIcon.Information,
-            2000
-        )
+
 
     # Pause update timer on move/resize start and resume later to reduce lag
     def moveEvent(self, event):
@@ -195,6 +206,7 @@ class ProcessMonitorApp(QtWidgets.QWidget):
 
     def refresh_top_processes(self):
         procs = get_top_processes(TOP_N)
+        alert_found = False
         self.table.setRowCount(0)
         for cpu, pid, name in procs:
             try:
@@ -208,20 +220,24 @@ class ProcessMonitorApp(QtWidgets.QWidget):
             self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(name))
             self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(f"{cpu:.2f}"))
             self.table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{mem:.2f}"))
+
             alert_item = QtWidgets.QTableWidgetItem("ALERT!" if cpu > CPU_ALERT_THRESHOLD else "")
             if cpu > CPU_ALERT_THRESHOLD:
+                alert_found = True
                 alert_item.setForeground(QtGui.QBrush(QtGui.QColor('red')))
-                self.tray_icon.showMessage(
-                    "CPU Alert",
-                    f"Process {name} (PID {pid}) CPU: {cpu:.2f}%",
-                    QtWidgets.QSystemTrayIcon.Warning,
-                    2000
-                )
             self.table.setItem(row, 4, alert_item)
 
             btn = QtWidgets.QPushButton("Terminate")
             btn.clicked.connect(lambda _, pid=pid: self.terminate_process(pid))
             self.table.setCellWidget(row, 5, btn)
+
+        # Update tray icon and tooltip based on alerts
+        if alert_found:
+            self.tray_icon.setIcon(self._alert_icon)
+            self.tray_icon.setToolTip("Process Monitoring IDS - ALERT")
+        else:
+            self.tray_icon.setIcon(self._default_icon)
+            self.tray_icon.setToolTip("Process Monitoring IDS")
 
     def terminate_process(self, pid):
         try:
@@ -246,11 +262,13 @@ class ProcessMonitorApp(QtWidgets.QWidget):
         self.graph_win = CPUGraph(pid)
         self.graph_win.show()
 
+
 def main():
     app = QtWidgets.QApplication(sys.argv)
     app.setStyleSheet(qdarkstyle.load_stylesheet_pyqt5())
     window = ProcessMonitorApp()
     sys.exit(app.exec_())
+
 
 if __name__ == "__main__":
     main()
